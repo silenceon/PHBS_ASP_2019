@@ -34,19 +34,18 @@ def basket_price_mc_cv(
 
     # Restore the state in order to generate the same state
     np.random.set_state(rand_st)  
+    '''
     price2 = basket_price_mc(
         strike, spot, spot*vol, weights, texp, cor_m,
         intr, divr, cp_sign, False, n_samples)
-    '''
-    price2 = 0
 
     ''' 
     compute price3: analytic price based on normal model
-    
+    '''
     price3 = basket_price_norm_analytic(
         strike, spot, vol, weights, texp, cor_m, intr, divr, cp_sign)
-    '''
-    price3 = 0
+    
+
     
     # return two prices: without and with CV
     return [price1, price1 - (price2 - price3)] 
@@ -62,20 +61,18 @@ def basket_price_mc(
     disc_fac = np.exp(-texp*intr)
     forward = spot / disc_fac * div_fac
 
-    cov_m = vol * cor_m * vol[:,None]
+    cov_m = vol * cor_m * vol.reshape(-1,1)
     chol_m = np.linalg.cholesky(cov_m)
 
     n_assets = spot.size
     znorm_m = np.random.normal(size=(n_assets, n_samples))
     
     if( bsm ) :
-        '''
-        PUT the simulation of the geometric brownian motion below
-        '''
-        pass
+        var = cov_m.diagonal()
+        prices = forward.reshape(-1,1) * np.exp(-0.5 * texp * var.reshape(-1,1) + np.sqrt(texp) * chol_m @ znorm_m)
     else:
         # bsm = False: normal model
-        prices = forward[:,None] + np.sqrt(texp) * chol_m @ znorm_m
+        prices = forward.reshape(-1,1) + np.sqrt(texp) * chol_m @ znorm_m
     
     price_weighted = weights @ prices
     
@@ -99,8 +96,23 @@ def basket_price_norm_analytic(
     
     PUT YOUR CODE BELOW
     '''
+    div_fac = np.exp(-texp*divr)
+    disc_fac = np.exp(-texp*intr)
+    forward = spot / disc_fac * div_fac
+    basket_forward = weights @ forward
+
+    cov_m = vol * cor_m * vol.reshape(-1,1)
+    basket_vol = np.sqrt(weights @ cov_m @ weights)
+
+    if( texp<0 or basket_vol*np.sqrt(texp)<1e-8 ):
+        return disc_fac * np.fmax( cp_sign*(basket_forward-strike), 0 )
+
+    vol_std = np.fmax(basket_vol * np.sqrt(texp), 1.0e-16)
+    d = (basket_forward - strike) / vol_std
+    price = disc_fac * (cp_sign * (basket_forward - strike) * ss.norm.cdf(cp_sign * d) + vol_std * ss.norm.pdf(d))
     
-    return 0.0
+    return price
+
 
 def spread_price_kirk(strike, spot, vol, texp, corr, intr=0, divr=0, cp_sign=1):
     div_fac = np.exp(-texp*divr)
@@ -108,6 +120,6 @@ def spread_price_kirk(strike, spot, vol, texp, corr, intr=0, divr=0, cp_sign=1):
     forward = spot / disc_fac * div_fac
     vol2 = vol[1]*forward[1]/(forward[1]+strike)
     vol_r = np.sqrt(vol[0]**2 + vol2*(vol2 - 2*corr*vol[0]))
-    price = disc_fac * bsm_formula(forward[1]+strike, forward[0], vol_r, texp, cp_sign=cp_sign)
+    price = disc_fac * bsm_price(forward[1]+strike, forward[0], vol_r, texp, cp_sign=cp_sign)
 
     return price
