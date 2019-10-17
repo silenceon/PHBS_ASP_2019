@@ -128,7 +128,22 @@ class ModelHagan:
         you may use sopt.root
         # https://docs.scipy.org/doc/scipy-0.18.1/reference/generated/scipy.optimize.root.html#scipy.optimize.root
         '''
-        return 0, 0, 0 # sigma, alpha, rho
+        texp = self.texp if (texp is None) else texp
+        forward = spot * np.exp(texp*(self.intr - self.divr))
+
+        impliedvol = np.zeros(3)
+        if (is_vol):
+            impliedvol = price_or_vol3
+        else:
+            for i in range(3):
+                impliedvol[i] = self.bsm_model.impvol(price_or_vol3[i], strike3[i], spot, texp, cp_sign = cp_sign)
+
+        bsmvolfun = lambda _parameter: \
+            bsm_vol(strike3, forward, texp, _parameter[0], alpha = _parameter[1], rho = _parameter[2]) - impliedvol
+        sol = sopt.root(bsmvolfun, [0.1, 0.1, 0]).x
+
+        return  sol[0], sol[1], sol[2] # sigma, alpha, rho
+        
 
 '''
 Hagan model class for beta=0
@@ -178,7 +193,21 @@ class ModelNormalHagan:
         you may use sopt.root
         # https://docs.scipy.org/doc/scipy-0.18.1/reference/generated/scipy.optimize.root.html#scipy.optimize.root
         '''
-        return 0, 0, 0 # sigma, alpha, rho
+        texp = self.texp if (texp is None) else texp
+        forward = spot * np.exp(texp*(self.intr - self.divr))
+
+        impliedvol = np.zeros(3)
+        if (is_vol):
+            impliedvol = price_or_vol3
+        else:
+            for i in range(3):
+                impliedvol[i] = self.normal_model.impvol(price_or_vol3[i], strike3[i], spot, texp, cp_sign = cp_sign)
+
+        normvolfun = lambda _parameter: \
+            norm_vol(strike3, forward, texp, _parameter[0], alpha = _parameter[1], rho = _parameter[2]) - impliedvol
+        sol = sopt.root(normvolfun, [0.1*forward, 0.1, 0]).x
+
+        return  sol[0], sol[1], sol[2]  # sigma, alpha, rho
 
 '''
 MC model class for Beta=1
@@ -188,11 +217,12 @@ class ModelBsmMC:
     alpha, rho = 0.0, 0.0
     texp, sigma, intr, divr = None, None, None, None
     bsm_model = None
+    
     '''
     You may define more members for MC: time step, etc
     '''
     
-    def __init__(self, texp, sigma, alpha=0, rho=0.0, beta=1.0, intr=0, divr=0):
+    def __init__(self, texp, sigma, alpha=0, rho=0.0, beta=1.0, intr=0, divr=0, delta_t=0.01, sample = 10000):
         self.texp = texp
         self.sigma = sigma
         self.alpha = alpha
@@ -200,6 +230,9 @@ class ModelBsmMC:
         self.intr = intr
         self.divr = divr
         self.bsm_model = bsm.Model(texp, sigma, intr=intr, divr=divr)
+        self.delta_t = delta_t
+        self.sample = sample
+        
         
     def bsm_vol(self, strike, spot, texp=None, sigma=None):
         ''''
@@ -207,7 +240,12 @@ class ModelBsmMC:
         this is the opposite of bsm_vol in ModelHagan class
         use bsm_model
         '''
-        return 0
+        texp = self.texp if(texp is None) else texp
+        sigma = self.sigma if(sigma is None) else sigma
+        price = self.price(strike, spot, texp, sigma, cp_sign=cp_sign)
+        vol = self.bsm_model.impvol(price, strike, spot, texp, cp_sign=cp_sign)
+        
+        return vol
     
     def price(self, strike, spot, texp=None, sigma=None, cp_sign=1):
         '''
@@ -215,8 +253,30 @@ class ModelBsmMC:
         Generate paths for vol and price first. Then get prices (vector) for all strikes
         You may fix the random number seed
         '''
-        np.random.seed(12345)
-        return 0
+        
+        
+        sigma = self.sigma if(sigma is None) else sigma
+        texp = self.texp if (texp is None) else texp
+        disc_fac = np.exp(-texp*self.intr)
+        forward = spot * np.exp(texp*(self.intr - self.divr))
+        
+        step = int(texp/self.delta_t)
+        vol_mc = np.ones([self.sample, step+1])
+        
+        #simulate volatility
+        np.random.seed(123)
+        Z_1 = np.random.normal(size=(self.sample, step))
+        vol_mc[:,1:] = np.cumsum(self.alpha*np.sqrt(self.delta_t)*Z_1 - 0.5*self.alpha**2*self.delta_t, axis = 1)
+        vol_mc = sigma * np.exp(vol_mc[:,:-1])
+        
+        #simulate price
+        np.random.seed(321)
+        Z_2 = self.rho * Z_1 + np.sqrt(1 - self.rho**2) * np.random.normal(size = (self.sample, step))
+        price_mc = np.cumsum(vol_mc*np.sqrt(self.delta_t)*Z_2 - 0.5*vol_mc**2*self.delta_t, axis = 1)
+        price_mc = np.fmax(cp_sign*forward*np.exp(price_mc[:,-1])-strike, 0)
+       
+        return price_mc.mean()*disc_fac
+
 
 '''
 MC model class for Beta=0
@@ -227,7 +287,7 @@ class ModelNormalMC:
     texp, sigma, intr, divr = None, None, None, None
     normal_model = None
     
-    def __init__(self, texp, sigma, alpha=0, rho=0.0, beta=0.0, intr=0, divr=0):
+    def __init__(self, texp, sigma, alpha=0, rho=0.0, beta=0.0, intr=0, divr=0,delta_t=0.01, sample = 10000):
         self.texp = texp
         self.sigma = sigma
         self.alpha = alpha
@@ -235,6 +295,8 @@ class ModelNormalMC:
         self.intr = intr
         self.divr = divr
         self.normal_model = normal.Model(texp, sigma, intr=intr, divr=divr)
+        self.delta_t = delta_t
+        self.sample = sample
         
     def norm_vol(self, strike, spot, texp=None, sigma=None):
         ''''
@@ -242,7 +304,12 @@ class ModelNormalMC:
         this is the opposite of normal_vol in ModelNormalHagan class
         use normal_model 
         '''
-        return 0
+        texp = self.texp if(texp is None) else texp
+        sigma = self.sigma if(sigma is None) else sigma
+        price = self.price(strike, spot, texp, sigma, cp_sign=cp_sign)
+        vol = self.normal_model.impvol(price, strike, spot, texp, cp_sign=cp_sign)
+
+        return vol
         
     def price(self, strike, spot, texp=None, sigma=None, cp_sign=1):
         '''
@@ -250,8 +317,27 @@ class ModelNormalMC:
         Generate paths for vol and price first. Then get prices (vector) for all strikes
         You may fix the random number seed
         '''
-        np.random.seed(12345)
-        return 0
+        sigma = self.sigma if(sigma is None) else sigma
+        texp = self.texp if (texp is None) else texp
+        disc_fac = np.exp(-texp*self.intr)
+        forward = spot * np.exp(texp*(self.intr - self.divr))
+        
+        step = int(texp/self.delta_t)
+        vol_mc = np.ones([self.sample, step+1])
+        
+        #simulate volatility
+        np.random.seed(123)
+        Z_1 = np.random.normal(size=(self.sample, step))
+        vol_mc[:,1:] = np.cumsum(self.alpha*np.sqrt(self.delta_t)*Z_1 - 0.5*self.alpha**2*self.delta_t, axis = 1)
+        vol_mc = sigma * np.exp(vol_mc[:,:-1])
+        
+        #simulate price
+        np.random.seed(321)
+        Z_2 = self.rho * Z_1 + np.sqrt(1 - self.rho**2) * np.random.normal(size = (self.sample, step))
+        price_mc = np.sum(vol_mc*Z_2*np.sqrt(self.delta_t), axis = 1)
+        price_mc = np.fmax(cp_sign*forward*price_mc-strike, 0)
+       
+        return price_mc.mean()*disc_fac
 
 '''
 Conditional MC model class for Beta=1
@@ -265,7 +351,7 @@ class ModelBsmCondMC:
     You may define more members for MC: time step, etc
     '''
     
-    def __init__(self, texp, sigma, alpha=0, rho=0.0, beta=1.0, intr=0, divr=0):
+    def __init__(self, texp, sigma, alpha=0, rho=0.0, beta=1.0, intr=0, divr=0, delta_t=0.01, sample = 10000):
         self.texp = texp
         self.sigma = sigma
         self.alpha = alpha
@@ -273,6 +359,8 @@ class ModelBsmCondMC:
         self.intr = intr
         self.divr = divr
         self.bsm_model = bsm.Model(texp, sigma, intr=intr, divr=divr)
+        self.delta_t = delta_t
+        self.sample = sample
         
     def bsm_vol(self, strike, spot, texp=None, sigma=None):
         ''''
@@ -290,8 +378,26 @@ class ModelBsmCondMC:
         Then get prices (vector) for all strikes
         You may fix the random number seed
         '''
-        np.random.seed(12345)
-        return 0
+        sigma = self.sigma if(sigma is None) else sigma
+        texp = self.texp if (texp is None) else texp
+        step = int(texp/self.delta_t)
+        
+        #simulate volatility
+        np.random.seed(123)
+        Z_1 = np.random.normal(size=(self.sample, step))
+        vol_mc[:,1:] = np.cumsum(self.alpha*np.sqrt(self.delta_t)*Z_1 - 0.5*self.alpha**2*self.delta_t, axis = 1)
+        vol_mc = sigma * np.exp(vol_mc[:,:-1])
+        
+        #simulate variance  
+        sim_w = np.ones((self.sample, self.step + 1))
+        sim_w[:,1::2], sim_w[:,2::2], sim_w[:,-1] = 4,2,1
+        integ_var = self.delta_t/3 * np.sum(sim_w*vol_mc**2, axis=1)
+
+        forward_mc = spot * np.exp(self.rho/self.alpha*(vol_mc[:,-1]-vol_mc[:,0])-self.rho**2/2*integ_var)
+        vol_mc = np.sqrt((1-self.rho**2)*integ_var/texp)
+
+        price = self.bsm_model.price(strike, forward_mc, texp, vol_mc, cp_sign=cp_sign)
+        return price.mean()
 
 '''
 Conditional MC model class for Beta=0
@@ -302,7 +408,7 @@ class ModelNormalCondMC:
     texp, sigma, intr, divr = None, None, None, None
     normal_model = None
     
-    def __init__(self, texp, sigma, alpha=0, rho=0.0, beta=0.0, intr=0, divr=0):
+    def __init__(self, texp, sigma, alpha=0, rho=0.0, beta=0.0, intr=0, divr=0, delta_t=0.01, sample = 10000):
         self.texp = texp
         self.sigma = sigma
         self.alpha = alpha
@@ -310,6 +416,10 @@ class ModelNormalCondMC:
         self.intr = intr
         self.divr = divr
         self.normal_model = normal.Model(texp, sigma, intr=intr, divr=divr)
+        self.delta_t = delta_t
+        self.sample = sample    
+        
+        
         
     def norm_vol(self, strike, spot, texp=None, sigma=None):
         ''''
@@ -318,13 +428,39 @@ class ModelNormalCondMC:
         use normal_model
         should be same as norm_vol method in ModelNormalMC (just copy & paste)
         '''
-        return 0
-        
+        texp = self.texp if(texp is None) else texp
+        sigma = self.sigma if(sigma is None) else sigma
+        price = self.price(strike, spot, texp, sigma, cp_sign=cp_sign)
+        vol = self.normal_model.impvol(price, strike, spot, texp, cp_sign=cp_sign)
+
+        return vol
+    
+    
     def price(self, strike, spot, texp=None, sigma=None, cp_sign=1):
         '''
         Your MC routine goes here
         Generate paths for vol only. Then compute integrated variance and normal price.
         You may fix the random number seed
         '''
-        np.random.seed(12345)
-        return 0
+        sigma = self.sigma if(sigma is None) else sigma
+        texp = self.texp if (texp is None) else texp
+        step = int(texp/self.delta_t)
+        
+        #simulate volatility
+        np.random.seed(123)
+        Z_1 = np.random.normal(size=(self.sample, step))
+        vol_mc[:,1:] = np.cumsum(self.alpha*np.sqrt(self.delta_t)*Z_1 - 0.5*self.alpha**2*self.delta_t, axis = 1)
+        vol_mc = sigma * np.exp(vol_mc[:,:-1])
+        
+        #simulate variance  
+        sim_w = np.ones((self.sample, self.step + 1))
+        sim_w[:,1:-1] = 2
+        integ_var = self.delta_t/3 * np.sum(sim_w*vol_mc**2, axis=1)
+
+        forward_mc = self.rho/self.alpha*(vol_mc[:,-1]-vol_mc[:,0])
+        vol_mc = np.sqrt((1-self.rho**2)*integ_var/texp)
+
+        price = self.bsm_model.price(strike, forward_mc, texp, vol_mc, cp_sign=cp_sign)
+        return price.mean()
+    
+    
