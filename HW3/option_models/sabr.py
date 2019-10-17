@@ -143,7 +143,7 @@ class ModelHagan:
         sol = sopt.root(bsmvolfun, [0.1, 0.1, 0]).x
 
         return  sol[0], sol[1], sol[2] # sigma, alpha, rho
-        
+
 
 '''
 Hagan model class for beta=0
@@ -273,9 +273,11 @@ class ModelBsmMC:
         np.random.seed(321)
         Z_2 = self.rho * Z_1 + np.sqrt(1 - self.rho**2) * np.random.normal(size = (self.sample, step))
         price_mc = np.cumsum(vol_mc*np.sqrt(self.delta_t)*Z_2 - 0.5*vol_mc**2*self.delta_t, axis = 1)
-        price_mc = np.fmax(cp_sign*forward*np.exp(price_mc[:,-1])-strike, 0)
-       
-        return price_mc.mean()*disc_fac
+        price_mc = forward *np.exp(price_mc)
+
+        price = np.array([(np.fmax(cp_sign*(price_mc - i), 0)).mean() for i in strike])
+
+        return price*disc_fac
 
 
 '''
@@ -335,10 +337,11 @@ class ModelNormalMC:
         np.random.seed(321)
         Z_2 = self.rho * Z_1 + np.sqrt(1 - self.rho**2) * np.random.normal(size = (self.sample, step))
         price_mc = np.sum(vol_mc*Z_2*np.sqrt(self.delta_t), axis = 1)
-        price_mc = np.fmax(cp_sign*forward*price_mc-strike, 0)
-       
-        return price_mc.mean()*disc_fac
+        price_mc = price_mc + forward
 
+        price = np.array([(np.fmax(cp_sign*(price_mc - i), 0)).mean() for i in strike])
+
+        return price*disc_fac
 '''
 Conditional MC model class for Beta=1
 '''
@@ -381,22 +384,23 @@ class ModelBsmCondMC:
         sigma = self.sigma if(sigma is None) else sigma
         texp = self.texp if (texp is None) else texp
         step = int(texp/self.delta_t)
-        
+        vol_mc = np.ones([self.sample, step+1])
+
         #simulate volatility
         np.random.seed(123)
         Z_1 = np.random.normal(size=(self.sample, step))
         vol_mc[:,1:] = np.cumsum(self.alpha*np.sqrt(self.delta_t)*Z_1 - 0.5*self.alpha**2*self.delta_t, axis = 1)
-        vol_mc = sigma * np.exp(vol_mc[:,:-1])
+        vol_mc = sigma * vol_mc
         
         #simulate variance  
-        sim_w = np.ones((self.sample, self.step + 1))
+        sim_w = np.ones((self.sample, step + 1))
         sim_w[:,1::2], sim_w[:,2::2], sim_w[:,-1] = 4,2,1
         integ_var = self.delta_t/3 * np.sum(sim_w*vol_mc**2, axis=1)
 
         forward_mc = spot * np.exp(self.rho/self.alpha*(vol_mc[:,-1]-vol_mc[:,0])-self.rho**2/2*integ_var)
         vol_mc = np.sqrt((1-self.rho**2)*integ_var/texp)
 
-        price = self.bsm_model.price(strike, forward_mc, texp, vol_mc, cp_sign=cp_sign)
+        price = self.bsm_model.price(strike, forward_mc.mean(), texp, vol_mc, cp_sign=cp_sign)
         return price.mean()
 
 '''
@@ -445,15 +449,16 @@ class ModelNormalCondMC:
         sigma = self.sigma if(sigma is None) else sigma
         texp = self.texp if (texp is None) else texp
         step = int(texp/self.delta_t)
-        
+        vol_mc = np.ones([self.sample, step+1])
+
         #simulate volatility
         np.random.seed(123)
         Z_1 = np.random.normal(size=(self.sample, step))
         vol_mc[:,1:] = np.cumsum(self.alpha*np.sqrt(self.delta_t)*Z_1 - 0.5*self.alpha**2*self.delta_t, axis = 1)
-        vol_mc = sigma * np.exp(vol_mc[:,:-1])
+        vol_mc = sigma * vol_mc
         
         #simulate variance  
-        sim_w = np.ones((self.sample, self.step + 1))
+        sim_w = np.ones((self.sample, step + 1))
         sim_w[:,1:-1] = 2
         integ_var = self.delta_t/3 * np.sum(sim_w*vol_mc**2, axis=1)
 
